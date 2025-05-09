@@ -1,0 +1,93 @@
+// config/languages.php
+<?php
+
+return [
+    'en' => [
+        'display' => 'English',
+        'flag-icon' => 'us'
+    ],
+    'id' => [
+        'display' => 'Bahasa Indonesia',
+        'flag-icon' => 'id'
+    ]
+];
+
+// resources/lang/en/messages.php
+<?php
+
+return [
+    // Navigation
+    'home' => 'Home',
+    'articles' => 'Articles',
+    'communities' => 'Communities',
+    'login' => 'Login',
+    'register' => 'Register',
+    'dashboard' => 'Dashboard',
+    'logout' => 'Logout',
+    'profile' => 'Profile',
+    'admin_panel' => 'Admin Panel',
+    'search' => 'Search',
+    
+    // Articles
+    'popular_articles' => 'Popular Articles',
+    'latest_articles' => 'Latest Articles',
+    'read_more' => 'Read More',
+    'published_on' => 'Published on',
+    'by_author' => 'By',
+    'category' => 'Category',
+    'tags' => 'Tags',
+    'add_article' => 'Add Article',
+    'edit_article' => 'Edit Article',
+    'delete_article' => 'Delete Article',
+    'title' => 'Title',
+    'content' => 'Content',
+    'image' => 'Image',
+    'save' => 'Save',
+    'cancel' => 'Cancel',
+    'publish' => 'Publish',
+    'select_category' => 'Select Category',
+    'select_tags' => 'Select Tags',
+    'article_saved' => 'Article saved successfully!',
+    'article_updated' => 'Article updated successfully!',
+    'article_deleted' => 'Article deleted successfully!',
+    'article_pending' => 'Your article is pending admin approval',
+
+    // Comments
+    'comments' => 'Comments',
+    'leave_comment' => 'Leave a comment',
+    'post_comment' => 'Post Comment',
+    'reply' => 'Reply',
+    'reply_to' => 'Reply to',
+    'comment_posted' => 'Comment posted successfully!',
+    'reply_posted' => 'Reply posted successfully!',
+
+    // Reactions
+    'like' => 'Like',
+    'love' => 'Love',
+    'laugh' => 'Laugh',
+    'sad' => 'Sad',
+    'angry' => 'Angry',
+    'wow' => 'Wow',
+    'reactions' => 'Reactions',
+    'reaction_saved' => 'Reaction saved!',
+
+    // Communities
+    'join_community' => 'Join Community',
+    'leave_community' => 'Leave Community',
+    'members' => 'Members',
+    'create_community' => 'Create Community',
+    'community_name' => 'Community Name',
+    'community_description' => 'Community Description',
+    'community_image' => 'Community Image',
+    'community_created' => 'Community created successfully!',
+    'joined_community' => 'You have joined this community!',
+    'left_community' => 'You have left this community!',
+    'message' => 'Message',
+    'send' => 'Send',
+    'tag_member' => 'Tag Member',
+    'attach_image' => 'Attach Image',
+    'message_sent' => 'Message sent!',
+
+    // User
+    'edit_profile' => 'Edit Profile',
+    '

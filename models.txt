@@ -1,0 +1,504 @@
+// app/Models/User.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, Notifiable;
+
+    protected $primaryKey = 'user_id';
+
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'foto_profil',
+        'bio',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    protected $casts = [
+        'email_verified_at' => 'datetime',
+        'password' => 'hashed',
+    ];
+
+    public function articles()
+    {
+        return $this->hasMany(Article::class, 'user_id', 'user_id');
+    }
+
+    public function comments()
+    {
+        return $this->hasMany(Comment::class, 'user_id', 'user_id');
+    }
+
+    public function commentReplies()
+    {
+        return $this->hasMany(CommentReply::class, 'user_id', 'user_id');
+    }
+
+    public function reactions()
+    {
+        return $this->hasMany(Reaction::class, 'user_id', 'user_id');
+    }
+
+    public function communities()
+    {
+        return $this->belongsToMany(Community::class, 'community_user_pivots', 'user_id', 'community_id')
+                ->withPivot('tg_gabung')
+                ->withTimestamps();
+    }
+
+    public function tags()
+    {
+        return $this->belongsToMany(Tag::class, 'user_tag_pivots', 'user_id', 'tag_id')
+                ->withTimestamps();
+    }
+
+    public function messages()
+    {
+        return $this->hasMany(Message::class, 'user_id', 'user_id');
+    }
+
+    public function isAdmin()
+    {
+        return Admin::where('email', $this->email)->exists();
+    }
+}
+
+// app/Models/Admin.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class Admin extends Authenticatable
+{
+    use HasFactory, Notifiable;
+
+    protected $primaryKey = 'admin_id';
+
+    protected $fillable = [
+        'nama_admin',
+        'email',
+        'password',
+        'foto_profil'
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    protected $casts = [
+        'password' => 'hashed',
+    ];
+}
+
+// app/Models/Category.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Category extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'category_id';
+
+    protected $fillable = [
+        'nama_category',
+        'slug',
+        'deskripsi'
+    ];
+
+    public function articles()
+    {
+        return $this->hasMany(Article::class, 'category_id', 'category_id');
+    }
+
+    public function getRouteKeyName()
+    {
+        return 'slug';
+    }
+}
+
+// app/Models/Article.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Article extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'article_id';
+
+    protected $fillable = [
+        'judul',
+        'slug',
+        'konten_isi_artikel',
+        'gambar',
+        'tgl_upload',
+        'user_id',
+        'category_id',
+        'is_approved'
+    ];
+
+    protected $casts = [
+        'tgl_upload' => 'date',
+        'is_approved' => 'boolean',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function category()
+    {
+        return $this->belongsTo(Category::class, 'category_id', 'category_id');
+    }
+
+    public function comments()
+    {
+        return $this->hasMany(Comment::class, 'article_id', 'article_id');
+    }
+
+    public function funfacts()
+    {
+        return $this->hasMany(Funfact::class, 'article_id', 'article_id');
+    }
+
+    public function reactions()
+    {
+        return $this->morphMany(Reaction::class, 'reactionable');
+    }
+
+    public function tags()
+    {
+        return $this->belongsToMany(Tag::class, 'article_tag_pivots', 'article_id', 'tag_id')
+                ->withTimestamps();
+    }
+
+    public function getRouteKeyName()
+    {
+        return 'slug';
+    }
+}
+
+// app/Models/Comment.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Comment extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'comment_id';
+
+    protected $fillable = [
+        'isi_komentar',
+        'tgl_komentar',
+        'user_id',
+        'article_id'
+    ];
+
+    protected $casts = [
+        'tgl_komentar' => 'datetime',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function article()
+    {
+        return $this->belongsTo(Article::class, 'article_id', 'article_id');
+    }
+
+    public function replies()
+    {
+        return $this->hasMany(CommentReply::class, 'comment_id', 'comment_id');
+    }
+
+    public function reactions()
+    {
+        return $this->morphMany(Reaction::class, 'reactionable');
+    }
+}
+
+// app/Models/CommentReply.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class CommentReply extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'reply_id';
+
+    protected $fillable = [
+        'isi_balasan',
+        'tgl_balasan',
+        'comment_id',
+        'user_id'
+    ];
+
+    protected $casts = [
+        'tgl_balasan' => 'datetime',
+    ];
+
+    public function comment()
+    {
+        return $this->belongsTo(Comment::class, 'comment_id', 'comment_id');
+    }
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function reactions()
+    {
+        return $this->morphMany(Reaction::class, 'reactionable');
+    }
+}
+
+// app/Models/Community.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Community extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'community_id';
+
+    protected $fillable = [
+        'nama_komunitas',
+        'slug',
+        'deskripsi',
+        'gambar'
+    ];
+
+    public function users()
+    {
+        return $this->belongsToMany(User::class, 'community_user_pivots', 'community_id', 'user_id')
+                ->withPivot('tg_gabung')
+                ->withTimestamps();
+    }
+
+    public function messages()
+    {
+        return $this->hasMany(Message::class, 'community_id', 'community_id');
+    }
+
+    public function getRouteKeyName()
+    {
+        return 'slug';
+    }
+}
+
+// app/Models/Tag.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Tag extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'tag_id';
+
+    protected $fillable = [
+        'nama_tag',
+        'slug'
+    ];
+
+    public function articles()
+    {
+        return $this->belongsToMany(Article::class, 'article_tag_pivots', 'tag_id', 'article_id')
+                ->withTimestamps();
+    }
+
+    public function users()
+    {
+        return $this->belongsToMany(User::class, 'user_tag_pivots', 'tag_id', 'user_id')
+                ->withTimestamps();
+    }
+
+    public function getRouteKeyName()
+    {
+        return 'slug';
+    }
+}
+
+// app/Models/Funfact.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Funfact extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'funfact_id';
+
+    protected $fillable = [
+        'judul',
+        'gambar',
+        'deskripsi_id',
+        'deskripsi_en',
+        'urutan_animasi',
+        'article_id'
+    ];
+
+    public function article()
+    {
+        return $this->belongsTo(Article::class, 'article_id', 'article_id');
+    }
+}
+
+// app/Models/Reaction.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Reaction extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'reaction_id';
+
+    protected $fillable = [
+        'jenis_reaksi',
+        'user_id',
+        'reactionable_id',
+        'reactionable_type'
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function reactionable()
+    {
+        return $this->morphTo();
+    }
+}
+
+// app/Models/Message.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Message extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'message_id';
+
+    protected $fillable = [
+        'isi_pesan',
+        'gambar',
+        'tgl_pesan',
+        'user_id',
+        'community_id'
+    ];
+
+    protected $casts = [
+        'tgl_pesan' => 'datetime',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    public function community()
+    {
+        return $this->belongsTo(Community::class, 'community_id', 'community_id');
+    }
+
+    public function taggedUsers()
+    {
+        return $this->belongsToMany(User::class, 'message_tags', 'message_id', 'user_id')
+                ->withTimestamps();
+    }
+}
+
+// app/Models/MessageTag.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class MessageTag extends Model
+{
+    use HasFactory;
+
+    protected $primaryKey = 'message_tag_id';
+
+    protected $fillable = [
+        'message_id',
+        'user_id'
+    ];
+
+    public function message()
+    {
+        return $this->belongsTo(Message::class, 'message_id', 'message_id');
+    }
+
+    public function taggedUser()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+}
