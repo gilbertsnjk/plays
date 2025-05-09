@@ -1,0 +1,901 @@
+1) Home Controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Category;
+use App\Models\Funfact;
+use Illuminate\Http\Request;
+
+class HomeController extends Controller
+{
+    /**
+     * Display the homepage with featured content.
+     */
+    public function index()
+    {
+        // Get latest approved articles with their relations
+        $latestArticles = Article::where('is_approved', true)
+            ->with(['user', 'category', 'tags', 'reactions'])
+            ->orderBy('tgl_upload', 'desc')
+            ->take(6)
+            ->get();
+
+        // Get most popular articles by reaction count
+        $popularArticles = Article::where('is_approved', true)
+            ->withCount('reactions')
+            ->with(['user', 'category', 'tags'])
+            ->orderBy('reactions_count', 'desc')
+            ->take(4)
+            ->get();
+
+        // Get random funfacts
+        $funfacts = Funfact::inRandomOrder()->take(3)->get();
+
+        // Get all categories for filtering
+        $categories = Category::all();
+
+        return view('home', compact('latestArticles', 'popularArticles', 'funfacts', 'categories'));
+    }
+
+    /**
+     * Search for articles based on query
+     */
+    public function search(Request $request)
+    {
+        $query = $request->input('query');
+        $categoryId = $request->input('category');
+
+        // Base query for approved articles
+        $articlesQuery = Article::where('is_approved', true);
+
+        // Apply search term if provided
+        if ($query) {
+            $articlesQuery->where(function ($q) use ($query) {
+                $q->where('judul', 'like', "%{$query}%")
+                  ->orWhere('konten_isi_artikel', 'like', "%{$query}%");
+            });
+        }
+
+        // Apply category filter if provided
+        if ($categoryId) {
+            $articlesQuery->where('category_id', $categoryId);
+        }
+
+        // Get search results with related data
+        $articles = $articlesQuery->with(['user', 'category', 'tags'])
+            ->orderBy('tgl_upload', 'desc')
+            ->paginate(10);
+
+        $categories = Category::all();
+
+        return view('articles.search', compact('articles', 'categories', 'query', 'categoryId'));
+    }
+}
+
+2)Article controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Category;
+use App\Models\Tag;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use App\Services\FileUploadService;
+
+class ArticleController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth')->except(['index', 'show']);
+    }
+
+    /**
+     * Display a listing of articles.
+     */
+    public function index()
+    {
+        $articles = Article::where('is_approved', true)
+            ->with(['user', 'category', 'tags', 'reactions'])
+            ->orderBy('tgl_upload', 'desc')
+            ->paginate(12);
+
+        $categories = Category::all();
+        $tags = Tag::all();
+
+        return view('articles.index', compact('articles', 'categories', 'tags'));
+    }
+
+    /**
+     * Show the form for creating a new article.
+     */
+    public function create()
+    {
+        $categories = Category::all();
+        $tags = Tag::all();
+        return view('articles.create', compact('categories', 'tags'));
+    }
+
+    /**
+     * Store a newly created article in storage.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'judul' => 'required|string|max:255',
+            'category_id' => 'required|exists:categories,category_id',
+            'konten_isi_artikel' => 'required',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'tags' => 'nullable|array',
+            'tags.*' => 'exists:tags,tag_id',
+        ]);
+
+        // Process image if uploaded
+        $imagePath = null;
+        if ($request->hasFile('gambar')) {
+            $imagePath = $this->fileUploadService->uploadFile($request->file('gambar'), 'articles');
+        }
+
+        // Create slug from title
+        $slug = Str::slug($request->judul);
+        $uniqueSlug = $this->createUniqueSlug($slug);
+
+        // Create article
+        $article = Article::create([
+            'judul' => $request->judul,
+            'slug' => $uniqueSlug,
+            'konten_isi_artikel' => $request->konten_isi_artikel,
+            'gambar' => $imagePath,
+            'tgl_upload' => now(),
+            'user_id' => Auth::id(),
+            'category_id' => $request->category_id,
+            'is_approved' => Auth::user()->isAdmin() ? true : false,
+        ]);
+
+        // Sync tags if selected
+        if ($request->has('tags')) {
+            $article->tags()->sync($request->tags);
+        }
+
+        $message = Auth::user()->isAdmin()
+            ? __('messages.article_saved')
+            : __('messages.article_pending');
+
+        return redirect()->route('dashboard.articles')->with('success', $message);
+    }
+
+    /**
+     * Display the specified article.
+     */
+    public function show(Article $article)
+    {
+        // If article is not approved and user is not admin or the owner
+        if (!$article->is_approved && (!Auth::check() || (Auth::id() != $article->user_id && !Auth::user()->isAdmin()))) {
+            abort(404);
+        }
+
+        $article->load(['user', 'category', 'tags', 'comments.user', 'comments.replies.user', 'funfacts']);
+
+        // Get related articles by category or tags
+        $relatedArticles = Article::where('is_approved', true)
+            ->where('article_id', '!=', $article->article_id)
+            ->where(function ($query) use ($article) {
+                $query->where('category_id', $article->category_id)
+                    ->orWhereHas('tags', function ($q) use ($article) {
+                        $q->whereIn('tags.tag_id', $article->tags->pluck('tag_id'));
+                    });
+            })
+            ->with(['user', 'category'])
+            ->inRandomOrder()
+            ->take(3)
+            ->get();
+
+        return view('articles.show', compact('article', 'relatedArticles'));
+    }
+
+    /**
+     * Show the form for editing the specified article.
+     */
+    public function edit(Article $article)
+    {
+        // Check if user is authorized to edit
+        if (Auth::id() != $article->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        $categories = Category::all();
+        $tags = Tag::all();
+
+        return view('articles.edit', compact('article', 'categories', 'tags'));
+    }
+
+    /**
+     * Update the specified article in storage.
+     */
+    public function update(Request $request, Article $article)
+    {
+        // Check if user is authorized to update
+        if (Auth::id() != $article->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Validate request
+        $request->validate([
+            'judul' => 'required|string|max:255',
+            'category_id' => 'required|exists:categories,category_id',
+            'konten_isi_artikel' => 'required',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'tags' => 'nullable|array',
+            'tags.*' => 'exists:tags,tag_id',
+        ]);
+
+        // Update slug if title changed
+        if ($article->judul !== $request->judul) {
+            $slug = Str::slug($request->judul);
+            $uniqueSlug = $this->createUniqueSlug($slug, $article->article_id);
+            $article->slug = $uniqueSlug;
+        }
+
+        // Process image if new one uploaded
+        if ($request->hasFile('gambar')) {
+            // Delete old image if exists
+            if ($article->gambar) {
+                Storage::delete($article->gambar);
+            }
+            $article->gambar = $this->fileUploadService->uploadFile($request->file('gambar'), 'articles');
+        }
+
+        // Update article details
+        $article->judul = $request->judul;
+        $article->konten_isi_artikel = $request->konten_isi_artikel;
+        $article->category_id = $request->category_id;
+        
+        // Only admin can approve
+        if (Auth::user()->isAdmin() && $request->has('is_approved')) {
+            $article->is_approved = $request->is_approved;
+        }
+        
+        $article->save();
+
+        // Sync tags
+        if ($request->has('tags')) {
+            $article->tags()->sync($request->tags);
+        } else {
+            $article->tags()->detach();
+        }
+
+        return redirect()->route(Auth::user()->isAdmin() ? 'admin.articles.index' : 'dashboard.articles')
+            ->with('success', __('messages.article_updated'));
+    }
+
+    /**
+     * Remove the specified article from storage.
+     */
+    public function destroy(Article $article)
+    {
+        // Check if user is authorized to delete
+        if (Auth::id() != $article->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Delete image if exists
+        if ($article->gambar) {
+            Storage::delete($article->gambar);
+        }
+
+        $article->delete();
+
+        return redirect()->back()->with('success', __('messages.article_deleted'));
+    }
+
+    /**
+     * Admin approves an article
+     */
+    public function approve(Article $article)
+    {
+        // Check if user is admin
+        if (!Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        $article->is_approved = true;
+        $article->save();
+
+        return redirect()->back()->with('success', 'Article has been approved.');
+    }
+
+    /**
+     * Create a unique slug
+     */
+    private function createUniqueSlug($slug, $ignoreId = null)
+    {
+        $originalSlug = $slug;
+        $count = 1;
+
+        // Check if the slug exists
+        while (true) {
+            // If we're updating an article, ignore its ID
+            $query = Article::where('slug', $slug);
+            if ($ignoreId) {
+                $query->where('article_id', '!=', $ignoreId);
+            }
+            
+            $exists = $query->exists();
+            
+            if (!$exists) {
+                break;
+            }
+
+            $slug = $originalSlug . '-' . $count++;
+        }
+
+        return $slug;
+    }
+}
+
+3) Comunity Controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Community;
+use App\Models\Message;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use App\Services\FileUploadService;
+
+class CommunityController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth')->except(['index', 'show']);
+    }
+
+    /**
+     * Display a listing of communities.
+     */
+    public function index()
+    {
+        $communities = Community::withCount('users')
+            ->orderBy('users_count', 'desc')
+            ->paginate(12);
+
+        return view('communities.index', compact('communities'));
+    }
+
+    /**
+     * Show the form for creating a new community.
+     */
+    public function create()
+    {
+        return view('communities.create');
+    }
+
+    /**
+     * Store a newly created community in storage.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'nama_komunitas' => 'required|string|max:255|unique:communities,nama_komunitas',
+            'deskripsi' => 'required|string',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+        ]);
+
+        // Process image if uploaded
+        $imagePath = null;
+        if ($request->hasFile('gambar')) {
+            $imagePath = $this->fileUploadService->uploadFile($request->file('gambar'), 'communities');
+        }
+
+        // Create slug from name
+        $slug = Str::slug($request->nama_komunitas);
+        $uniqueSlug = $this->createUniqueSlug($slug);
+
+        // Create community
+        $community = Community::create([
+            'nama_komunitas' => $request->nama_komunitas,
+            'slug' => $uniqueSlug,
+            'deskripsi' => $request->deskripsi,
+            'gambar' => $imagePath,
+        ]);
+
+        // Auto-join the creator to the community
+        $community->users()->attach(Auth::id(), ['tg_gabung' => now()]);
+
+        return redirect()->route('communities.show', $community)
+            ->with('success', __('messages.community_created'));
+    }
+
+    /**
+     * Display the specified community.
+     */
+    public function show(Community $community)
+    {
+        $community->load('users');
+        
+        // Check if user is a member of this community
+        $isMember = false;
+        if (Auth::check()) {
+            $isMember = $community->users()->where('users.user_id', Auth::id())->exists();
+        }
+
+        // Get community messages with related data if user is a member
+        $messages = collect();
+        if ($isMember) {
+            $messages = Message::where('community_id', $community->community_id)
+                ->with(['user', 'taggedUsers'])
+                ->orderBy('tgl_pesan', 'desc')
+                ->paginate(20);
+        }
+
+        // Get members for tagging
+        $members = $community->users;
+
+        return view('communities.show', compact('community', 'isMember', 'messages', 'members'));
+    }
+
+    /**
+     * Show the form for editing the specified community.
+     */
+    public function edit(Community $community)
+    {
+        // Only admin can edit communities
+        if (!Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        return view('communities.edit', compact('community'));
+    }
+
+    /**
+     * Update the specified community in storage.
+     */
+    public function update(Request $request, Community $community)
+    {
+        // Only admin can update communities
+        if (!Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Validate request
+        $request->validate([
+            'nama_komunitas' => 'required|string|max:255|unique:communities,nama_komunitas,' . $community->community_id . ',community_id',
+            'deskripsi' => 'required|string',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+        ]);
+
+        // Update slug if name changed
+        if ($community->nama_komunitas !== $request->nama_komunitas) {
+            $slug = Str::slug($request->nama_komunitas);
+            $uniqueSlug = $this->createUniqueSlug($slug, $community->community_id);
+            $community->slug = $uniqueSlug;
+        }
+
+        // Process image if new one uploaded
+        if ($request->hasFile('gambar')) {
+            // Delete old image if exists
+            if ($community->gambar) {
+                Storage::delete($community->gambar);
+            }
+            $community->gambar = $this->fileUploadService->uploadFile($request->file('gambar'), 'communities');
+        }
+
+        // Update community details
+        $community->nama_komunitas = $request->nama_komunitas;
+        $community->deskripsi = $request->deskripsi;
+        $community->save();
+
+        return redirect()->route('admin.communities.index')
+            ->with('success', 'Community updated successfully');
+    }
+
+    /**
+     * Remove the specified community from storage.
+     */
+    public function destroy(Community $community)
+    {
+        // Only admin can delete communities
+        if (!Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Delete image if exists
+        if ($community->gambar) {
+            Storage::delete($community->gambar);
+        }
+
+        $community->delete();
+
+        return redirect()->route('admin.communities.index')
+            ->with('success', 'Community deleted successfully');
+    }
+
+    /**
+     * User joins a community
+     */
+    public function join(Community $community)
+    {
+        // Check if already a member
+        if (!$community->users()->where('users.user_id', Auth::id())->exists()) {
+            $community->users()->attach(Auth::id(), ['tg_gabung' => now()]);
+            return redirect()->back()->with('success', __('messages.joined_community'));
+        }
+
+        return redirect()->back()->with('info', 'You are already a member of this community');
+    }
+
+    /**
+     * User leaves a community
+     */
+    public function leave(Community $community)
+    {
+        $community->users()->detach(Auth::id());
+        return redirect()->back()->with('success', __('messages.left_community'));
+    }
+
+    /**
+     * Create a unique slug
+     */
+    private function createUniqueSlug($slug, $ignoreId = null)
+    {
+        $originalSlug = $slug;
+        $count = 1;
+
+        // Check if the slug exists
+        while (true) {
+            // If we're updating a community, ignore its ID
+            $query = Community::where('slug', $slug);
+            if ($ignoreId) {
+                $query->where('community_id', '!=', $ignoreId);
+            }
+            
+            $exists = $query->exists();
+            
+            if (!$exists) {
+                break;
+            }
+
+            $slug = $originalSlug . '-' . $count++;
+        }
+
+        return $slug;
+    }
+}
+4) Comment Controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Comment;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class CommentController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
+    /**
+     * Store a newly created comment in storage.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'article_id' => 'required|exists:articles,article_id',
+            'isi_komentar' => 'required|string',
+        ]);
+
+        // Check if article exists and is approved
+        $article = Article::findOrFail($request->article_id);
+        if (!$article->is_approved && !Auth::user()->isAdmin() && $article->user_id !== Auth::id()) {
+            abort(403, 'Article is not approved yet');
+        }
+
+        // Create comment
+        $comment = Comment::create([
+            'isi_komentar' => $request->isi_komentar,
+            'tgl_komentar' => now(),
+            'user_id' => Auth::id(),
+            'article_id' => $request->article_id,
+        ]);
+
+        // Return a partial view for AJAX requests or redirect back
+        if ($request->ajax()) {
+            $comment->load('user');
+            return view('partials.comment', compact('comment'))->render();
+        }
+
+        return redirect()->back()->with('success', __('messages.comment_posted'));
+    }
+
+    /**
+     * Update the specified comment in storage.
+     */
+    public function update(Request $request, Comment $comment)
+    {
+        // Check if user is authorized to update
+        if (Auth::id() != $comment->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Validate request
+        $request->validate([
+            'isi_komentar' => 'required|string',
+        ]);
+
+        // Update comment
+        $comment->isi_komentar = $request->isi_komentar;
+        $comment->save();
+
+        return redirect()->back()->with('success', 'Comment updated successfully');
+    }
+
+    /**
+     * Remove the specified comment from storage.
+     */
+    public function destroy(Comment $comment)
+    {
+        // Check if user is authorized to delete
+        if (Auth::id() != $comment->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        $comment->delete();
+
+        return redirect()->back()->with('success', 'Comment deleted successfully');
+    }
+}	
+5) Comment_Reply_Controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Comment;
+use App\Models\CommentReply;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class CommentReplyController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
+    /**
+     * Store a newly created reply in storage.
+     */
+    public function store(Request $request, Comment $comment)
+    {
+        // Validate request data
+        $request->validate([
+            'isi_balasan' => 'required|string',
+        ]);
+
+        // Create reply
+        $reply = CommentReply::create([
+            'isi_balasan' => $request->isi_balasan,
+            'tgl_balasan' => now(),
+            'comment_id' => $comment->comment_id,
+            'user_id' => Auth::id(),
+        ]);
+
+        // Return a partial view for AJAX requests or redirect back
+        if ($request->ajax()) {
+            $reply->load('user');
+            return view('partials.reply', compact('reply'))->render();
+        }
+
+        return redirect()->back()->with('success', __('messages.reply_posted'));
+    }
+
+    /**
+     * Update the specified reply in storage.
+     */
+    public function update(Request $request, CommentReply $reply)
+    {
+        // Check if user is authorized to update
+        if (Auth::id() != $reply->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Validate request
+        $request->validate([
+            'isi_balasan' => 'required|string',
+        ]);
+
+        // Update reply
+        $reply->isi_balasan = $request->isi_balasan;
+        $reply->save();
+
+        return redirect()->back()->with('success', 'Reply updated successfully');
+    }
+
+    /**
+     * Remove the specified reply from storage.
+     */
+    public function destroy(CommentReply $reply)
+    {
+        // Check if user is authorized to delete
+        if (Auth::id() != $reply->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        $reply->delete();
+
+        return redirect()->back()->with('success', 'Reply deleted successfully');
+    }
+}
+
+6) Massage Controller
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Community;
+use App\Models\Message;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use App\Services\FileUploadService;
+
+class MessageController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth');
+    }
+
+    /**
+     * Store a newly created message in storage.
+     */
+    public function store(Request $request, Community $community)
+    {
+        // Validate that user is a member of the community
+        $isMember = $community->users()->where('users.user_id', Auth::id())->exists();
+        if (!$isMember) {
+            abort(403, 'You must join the community to send messages');
+        }
+
+        // Validate request data
+        $request->validate([
+            'isi_pesan' => 'required_without:gambar|string|nullable',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'tagged_users' => 'nullable|array',
+            'tagged_users.*' => 'exists:users,user_id',
+        ]);
+
+        // Process image if uploaded
+        $imagePath = null;
+        if ($request->hasFile('gambar')) {
+            $imagePath = $this->fileUploadService->uploadFile($request->file('gambar'), 'messages');
+        }
+
+        // Create message
+        $message = Message::create([
+            'isi_pesan' => $request->isi_pesan,
+            'gambar' => $imagePath,
+            'tgl_pesan' => now(),
+            'user_id' => Auth::id(),
+            'community_id' => $community->community_id,
+        ]);
+
+        // Sync tagged users
+        if ($request->has('tagged_users')) {
+            $message->taggedUsers()->sync($request->tagged_users);
+        }
+
+        // Return a partial view for AJAX requests or redirect back
+        if ($request->ajax()) {
+            $message->load(['user', 'taggedUsers']);
+            return view('partials.message', compact('message'))->render();
+        }
+
+        return redirect()->back()->with('success', __('messages.message_sent'));
+    }
+
+    /**
+     * Update the specified message in storage.
+     */
+    public function update(Request $request, Message $message)
+    {
+        // Check if user is authorized to update
+        if (Auth::id() != $message->user_id) {
+            abort(403);
+        }
+
+        // Validate request
+        $request->validate([
+            'isi_pesan' => 'required_without:gambar|string|nullable',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'tagged_users' => 'nullable|array',
+            'tagged_users.*' => 'exists:users,user_id',
+        ]);
+
+        // Process image if new one uploaded
+        if ($request->hasFile('gambar')) {
+            // Delete old image if exists
+            if ($message->gambar) {
+                Storage::delete($message->gambar);
+            }
+            $message->gambar = $this->fileUploadService->uploadFile($request->file('gambar'), 'messages');
+        }
+
+        // Update message
+        $message->isi_pesan = $request->isi_pesan;
+        $message->save();
+
+        // Sync tagged users
+        if ($request->has('tagged_users')) {
+            $message->taggedUsers()->sync($request->tagged_users);
+        } else {
+            $message->taggedUsers()->detach();
+        }
+
+        return redirect()->back()->with('success', 'Message updated successfully');
+    }
+
+    /**
+     * Remove the specified message from storage.
+     */
+    public function destroy(Message $message)
+    {
+        // Check if user is authorized to delete
+        if (Auth::id() != $message->user_id && !Auth::user()->isAdmin()) {
+            abort(403);
+        }
+
+        // Delete image if exists
+        if ($message->gambar) {
+            Storage::delete($message->gambar);
+        }
+
+        $message->delete();
+
+        return redirect()->back()->with('success', 'Message deleted successfully');
+    }
+
+    /**
+     * Load more messages for a community
+     */
+    public function loadMore(Request $request, Community $community)
+    {
+        // Validate that user is a member of the community
+        $isMember = $community->users()->where('users.user_id', Auth::id())->exists();
+        if (!$isMember) {
+            abort(403, 'You must join the community to view messages');
+        }
+
+        $page = $request->input('page', 1);
+        $messages = Message::where('community_id', $community->community_id)
+            ->with(['user', 'taggedUsers'])
+            ->orderBy('tgl_pesan', 'desc')
+            ->paginate(20, ['*'], 'page', $page);
+
+        return view('partials.messages', compact('messages'))->render();
+    }
+}
