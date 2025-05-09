@@ -1,0 +1,844 @@
+-Dashboard 
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Community;
+use App\Services\FileUploadService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+
+class DashboardController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth');
+    }
+
+    /**
+     * Display user dashboard homepage.
+     */
+    public function index()
+    {
+        $user = Auth::user();
+        
+        // Get user's articles with their statistics
+        $articles = Article::where('user_id', $user->user_id)
+            ->withCount(['comments', 'reactions'])
+            ->orderBy('tgl_upload', 'desc')
+            ->take(5)
+            ->get();
+            
+        // Get user's communities
+        $communities = $user->communities()
+            ->withCount('users')
+            ->orderBy('pivot_tg_gabung', 'desc')
+            ->take(5)
+            ->get();
+            
+        return view('dashboard.index', compact('user', 'articles', 'communities'));
+    }
+    
+    /**
+     * Display user profile edit form.
+     */
+    public function profile()
+    {
+        $user = Auth::user();
+        return view('dashboard.profile', compact('user'));
+    }
+    
+    /**
+     * Update user profile information.
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Validate request data
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email,' . $user->user_id . ',user_id',
+            'bio' => 'nullable|string|max:500',
+            'foto_profil' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'password' => 'nullable|string|min:8|confirmed',
+        ]);
+        
+        // Update user details
+        $user->name = $request->name;
+        $user->email = $request->email;
+        $user->bio = $request->bio;
+        
+        // Process profile photo if uploaded
+        if ($request->hasFile('foto_profil')) {
+            // Delete old photo if exists
+            if ($user->foto_profil) {
+                \Storage::delete($user->foto_profil);
+            }
+            $user->foto_profil = $this->fileUploadService->uploadFile($request->file('foto_profil'), 'profiles');
+        }
+        
+        // Update password if provided
+        if ($request->filled('password')) {
+            $user->password = Hash::make($request->password);
+        }
+        
+        $user->save();
+        
+        return redirect()->route('dashboard.profile')->with('success', __('messages.profile_updated'));
+    }
+    
+    /**
+     * Display user's articles.
+     */
+    public function articles()
+    {
+        $articles = Article::where('user_id', Auth::id())
+            ->withCount(['comments', 'reactions'])
+            ->orderBy('tgl_upload', 'desc')
+            ->paginate(10);
+            
+        return view('dashboard.articles', compact('articles'));
+    }
+    
+    /**
+     * Display user's communities.
+     */
+    public function communities()
+    {
+        $user = Auth::user();
+        $communities = $user->communities()
+            ->withCount('users')
+            ->orderBy('pivot_tg_gabung', 'desc')
+            ->paginate(12);
+            
+        return view('dashboard.communities', compact('communities'));
+    }
+    
+    /**
+     * Display user's settings page.
+     */
+    public function settings()
+    {
+        return view('dashboard.settings');
+    }
+    
+    /**
+     * Update user's settings.
+     */
+    public function updateSettings(Request $request)
+    {
+        $user = Auth::user();
+        
+        // Validate request data
+        $request->validate([
+            'language' => 'nullable|string|in:en,id',
+            'notification_preferences' => 'nullable|array',
+        ]);
+        
+        // Update language preference in session
+        if ($request->has('language')) {
+            session(['locale' => $request->language]);
+        }
+        
+        // Update notification preferences (implement as needed)
+        // This would typically involve storing preferences in a user_settings table
+        
+        return redirect()->route('dashboard.settings')->with('success', __('messages.settings_updated'));
+    }
+}
+
+-Admin
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Admin;
+use App\Models\Article;
+use App\Models\Category;
+use App\Models\Community;
+use App\Models\Funfact;
+use App\Models\Tag;
+use App\Models\User;
+use App\Services\FileUploadService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+
+class AdminController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth');
+        $this->middleware('is.admin');
+    }
+
+    /**
+     * Display admin dashboard homepage.
+     */
+    public function dashboard()
+    {
+        // Count total articles, users, communities
+        $totalArticles = Article::count();
+        $pendingArticles = Article::where('is_approved', false)->count();
+        $totalUsers = User::count();
+        $totalCommunities = Community::count();
+        
+        // Recent activity - latest articles needing approval
+        $recentArticles = Article::where('is_approved', false)
+            ->with('user')
+            ->orderBy('tgl_upload', 'desc')
+            ->take(5)
+            ->get();
+            
+        // Recent users
+        $recentUsers = User::orderBy('created_at', 'desc')
+            ->take(5)
+            ->get();
+            
+        return view('admin.dashboard', compact(
+            'totalArticles', 
+            'pendingArticles', 
+            'totalUsers', 
+            'totalCommunities', 
+            'recentArticles', 
+            'recentUsers'
+        ));
+    }
+    
+    /**
+     * Display admin profile edit form.
+     */
+    public function profile()
+    {
+        $user = Auth::user();
+        $admin = Admin::where('email', $user->email)->first();
+        
+        return view('admin.profile', compact('user', 'admin'));
+    }
+    
+    /**
+     * Update admin profile information.
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = Auth::user();
+        $admin = Admin::where('email', $user->email)->first();
+        
+        // Validate request data
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|string|email|max:255|unique:users,email,' . $user->user_id . ',user_id',
+            'foto_profil' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'password' => 'nullable|string|min:8|confirmed',
+        ]);
+        
+        // Start transaction to update both user and admin profiles
+        \DB::beginTransaction();
+        
+        try {
+            // Update user details
+            $user->name = $request->name;
+            $oldEmail = $user->email;
+            $user->email = $request->email;
+            
+            // Process profile photo if uploaded
+            if ($request->hasFile('foto_profil')) {
+                // Delete old photo if exists
+                if ($user->foto_profil) {
+                    \Storage::delete($user->foto_profil);
+                }
+                $imagePath = $this->fileUploadService->uploadFile($request->file('foto_profil'), 'profiles');
+                $user->foto_profil = $imagePath;
+                
+                // Also update admin profile photo
+                $admin->foto_profil = $imagePath;
+            }
+            
+            // Update password if provided
+            if ($request->filled('password')) {
+                $user->password = Hash::make($request->password);
+                $admin->password = Hash::make($request->password);
+            }
+            
+            $user->save();
+            
+            // Update admin record
+            $admin->nama_admin = $request->name;
+            $admin->email = $request->email;
+            $admin->save();
+            
+            \DB::commit();
+            
+            return redirect()->route('admin.profile')->with('success', 'Profile updated successfully');
+        } catch (\Exception $e) {
+            \DB::rollBack();
+            return redirect()->back()->with('error', 'Error updating profile: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Display user management page.
+     */
+    public function users()
+    {
+        $users = User::withCount(['articles', 'comments'])
+            ->orderBy('created_at', 'desc')
+            ->paginate(15);
+            
+        return view('admin.users.index', compact('users'));
+    }
+    
+    /**
+     * Display details for a specific user.
+     */
+    public function showUser(User $user)
+    {
+        $user->load(['articles', 'communities']);
+        
+        // Get user activity stats
+        $articleCount = $user->articles->count();
+        $commentCount = $user->comments->count();
+        $reactionCount = $user->reactions->count();
+        $communityCount = $user->communities->count();
+        
+        return view('admin.users.show', compact(
+            'user', 
+            'articleCount', 
+            'commentCount', 
+            'reactionCount', 
+            'communityCount'
+        ));
+    }
+    
+    /**
+     * Toggle admin status for a user.
+     */
+    public function toggleAdmin(User $user)
+    {
+        // Check if user is already an admin
+        $isAdmin = Admin::where('email', $user->email)->exists();
+        
+        if ($isAdmin) {
+            // Remove admin privileges
+            Admin::where('email', $user->email)->delete();
+            $message = 'Admin privileges removed for ' . $user->name;
+        } else {
+            // Add admin privileges
+            Admin::create([
+                'nama_admin' => $user->name,
+                'email' => $user->email,
+                'password' => $user->password,
+                'foto_profil' => $user->foto_profil
+            ]);
+            $message = 'Admin privileges granted to ' . $user->name;
+        }
+        
+        return redirect()->back()->with('success', $message);
+    }
+}
+
+-Language
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\Config;
+
+class LanguageController extends Controller
+{
+    /**
+     * Switch between available languages.
+     *
+     * @param  string  $locale
+     * @return \Illuminate\Http\RedirectResponse
+     */
+    public function switchLang($locale)
+    {
+        // Check if the locale exists in our config
+        if (array_key_exists($locale, Config::get('languages'))) {
+            Session::put('locale', $locale);
+            App::setLocale($locale);
+        }
+        
+        return redirect()->back();
+    }
+    
+    /**
+     * Translate text using an external translation API (for dynamic content).
+     * This method can be used for translating user-generated content.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function translateText(Request $request)
+    {
+        $request->validate([
+            'text' => 'required|string',
+            'from' => 'required|string|size:2',
+            'to' => 'required|string|size:2',
+        ]);
+        
+        // This is a placeholder for integrating with a translation API
+        // Examples include Google Cloud Translation, Amazon Translate, DeepL, etc.
+        // In a real application, you would make an API call here
+        
+        // For demonstration purposes, we're returning a simple response
+        // In a real app, you would return the translated text from the API
+        return response()->json([
+            'success' => true,
+            'translated_text' => '[Translation would appear here in a real implementation]',
+            'source_language' => $request->from,
+            'target_language' => $request->to
+        ]);
+    }
+    
+    /**
+     * Get available languages for the application.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getAvailableLanguages()
+    {
+        $languages = Config::get('languages');
+        
+        return response()->json([
+            'success' => true,
+            'languages' => $languages,
+            'current' => App::getLocale()
+        ]);
+    }
+}
+
+-Reaction
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Comment;
+use App\Models\CommentReply;
+use App\Models\Reaction;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class ReactionController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+    
+    /**
+     * Store a new reaction or update existing one.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'reactionable_id' => 'required|integer',
+            'reactionable_type' => 'required|string|in:App\\Models\\Article,App\\Models\\Comment,App\\Models\\CommentReply',
+            'jenis_reaksi' => 'required|string|in:like,love,laugh,sad,angry,wow',
+        ]);
+        
+        // Check if the reactionable exists
+        $reactionableType = $request->reactionable_type;
+        $reactionableId = $request->reactionable_id;
+        
+        $exists = $reactionableType::find($reactionableId);
+        if (!$exists) {
+            return response()->json(['error' => 'The content you are trying to react to does not exist.'], 404);
+        }
+        
+        // Find existing reaction by this user for this content
+        $existingReaction = Reaction::where('user_id', Auth::id())
+            ->where('reactionable_id', $reactionableId)
+            ->where('reactionable_type', $reactionableType)
+            ->first();
+            
+        if ($existingReaction) {
+            // If same reaction, remove it (toggle off)
+            if ($existingReaction->jenis_reaksi == $request->jenis_reaksi) {
+                $existingReaction->delete();
+                $action = 'removed';
+            } else {
+                // If different reaction, update it
+                $existingReaction->jenis_reaksi = $request->jenis_reaksi;
+                $existingReaction->save();
+                $action = 'updated';
+            }
+        } else {
+            // Create new reaction
+            Reaction::create([
+                'jenis_reaksi' => $request->jenis_reaksi,
+                'user_id' => Auth::id(),
+                'reactionable_id' => $reactionableId,
+                'reactionable_type' => $reactionableType,
+            ]);
+            $action = 'added';
+        }
+        
+        // Get updated reaction counts for this content
+        $reactions = Reaction::where('reactionable_id', $reactionableId)
+            ->where('reactionable_type', $reactionableType)
+            ->select('jenis_reaksi', \DB::raw('count(*) as count'))
+            ->groupBy('jenis_reaksi')
+            ->get()
+            ->pluck('count', 'jenis_reaksi')
+            ->toArray();
+            
+        return response()->json([
+            'success' => true,
+            'action' => $action,
+            'reaction' => $request->jenis_reaksi,
+            'reactions' => $reactions
+        ]);
+    }
+    
+    /**
+     * Get reactions for a specific item.
+     */
+    public function getReactions(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'reactionable_id' => 'required|integer',
+            'reactionable_type' => 'required|string|in:App\\Models\\Article,App\\Models\\Comment,App\\Models\\CommentReply',
+        ]);
+        
+        $reactionableType = $request->reactionable_type;
+        $reactionableId = $request->reactionable_id;
+        
+        // Get all reactions for this content
+        $reactions = Reaction::where('reactionable_id', $reactionableId)
+            ->where('reactionable_type', $reactionableType)
+            ->select('jenis_reaksi', \DB::raw('count(*) as count'))
+            ->groupBy('jenis_reaksi')
+            ->get()
+            ->pluck('count', 'jenis_reaksi')
+            ->toArray();
+            
+        // Get the user's reaction if they are logged in
+        $userReaction = null;
+        if (Auth::check()) {
+            $reaction = Reaction::where('user_id', Auth::id())
+                ->where('reactionable_id', $reactionableId)
+                ->where('reactionable_type', $reactionableType)
+                ->first();
+                
+            if ($reaction) {
+                $userReaction = $reaction->jenis_reaksi;
+            }
+        }
+        
+        return response()->json([
+            'success' => true,
+            'reactions' => $reactions,
+            'user_reaction' => $userReaction
+        ]);
+    }
+}
+
+
+-LikeDislike
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\LikeDislike;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class LikeDislikeController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+    
+    /**
+     * Store a new like/dislike or update existing one.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'type' => 'required|string|in:like,dislike',
+            'model_type' => 'required|string|in:App\\Models\\Article,App\\Models\\Comment',
+            'model_id' => 'required|integer',
+        ]);
+        
+        // Check if the model exists
+        $modelType = $request->model_type;
+        $modelId = $request->model_id;
+        
+        $exists = $modelType::find($modelId);
+        if (!$exists) {
+            return response()->json(['error' => 'The content you are trying to like/dislike does not exist.'], 404);
+        }
+        
+        // Find existing like/dislike by this user for this content
+        $existingLikeDislike = LikeDislike::where('user_id', Auth::id())
+            ->where('likeable_id', $modelId)
+            ->where('likeable_type', $modelType)
+            ->first();
+            
+        if ($existingLikeDislike) {
+            // If same type, remove it (toggle off)
+            if ($existingLikeDislike->type == $request->type) {
+                $existingLikeDislike->delete();
+                $action = 'removed';
+            } else {
+                // If different type, update it
+                $existingLikeDislike->type = $request->type;
+                $existingLikeDislike->save();
+                $action = 'updated';
+            }
+        } else {
+            // Create new like/dislike
+            LikeDislike::create([
+                'type' => $request->type,
+                'user_id' => Auth::id(),
+                'likeable_id' => $modelId,
+                'likeable_type' => $modelType,
+            ]);
+            $action = 'added';
+        }
+        
+        // Get updated like/dislike counts for this content
+        $likeCount = LikeDislike::where('likeable_id', $modelId)
+            ->where('likeable_type', $modelType)
+            ->where('type', 'like')
+            ->count();
+            
+        $dislikeCount = LikeDislike::where('likeable_id', $modelId)
+            ->where('likeable_type', $modelType)
+            ->where('type', 'dislike')
+            ->count();
+            
+        return response()->json([
+            'success' => true,
+            'action' => $action,
+            'type' => $request->type,
+            'likes' => $likeCount,
+            'dislikes' => $dislikeCount
+        ]);
+    }
+    
+    /**
+     * Get like/dislike counts for a specific item.
+     */
+    public function getLikeDislikes(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'model_type' => 'required|string|in:App\\Models\\Article,App\\Models\\Comment',
+            'model_id' => 'required|integer',
+        ]);
+        
+        $modelType = $request->model_type;
+        $modelId = $request->model_id;
+        
+        // Get like and dislike counts
+        $likeCount = LikeDislike::where('likeable_id', $modelId)
+            ->where('likeable_type', $modelType)
+            ->where('type', 'like')
+            ->count();
+            
+        $dislikeCount = LikeDislike::where('likeable_id', $modelId)
+            ->where('likeable_type', $modelType)
+            ->where('type', 'dislike')
+            ->count();
+            
+        // Get the user's like/dislike status if they are logged in
+        $userStatus = null;
+        if (Auth::check()) {
+            $likeDislike = LikeDislike::where('user_id', Auth::id())
+                ->where('likeable_id', $modelId)
+                ->where('likeable_type', $modelType)
+                ->first();
+                
+            if ($likeDislike) {
+                $userStatus = $likeDislike->type;
+            }
+        }
+        
+        return response()->json([
+            'success' => true,
+            'likes' => $likeCount,
+            'dislikes' => $dislikeCount,
+            'user_status' => $userStatus
+        ]);
+    }
+}
+
+-Funfact
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use App\Models\Funfact;
+use App\Services\FileUploadService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class FunfactController extends Controller
+{
+    protected $fileUploadService;
+
+    public function __construct(FileUploadService $fileUploadService)
+    {
+        $this->fileUploadService = $fileUploadService;
+        $this->middleware('auth');
+        $this->middleware('is.admin')->except(['index', 'show']);
+    }
+
+    /**
+     * Display a listing of funfacts.
+     */
+    public function index()
+    {
+        $funfacts = Funfact::with('article')
+            ->orderBy('created_at', 'desc')
+            ->paginate(12);
+            
+        return view('funfacts.index', compact('funfacts'));
+    }
+
+    /**
+     * Show the form for creating a new funfact.
+     */
+    public function create()
+    {
+        $articles = Article::where('is_approved', true)
+            ->orderBy('judul', 'asc')
+            ->get();
+            
+        return view('admin.funfacts.create', compact('articles'));
+    }
+
+    /**
+     * Store a newly created funfact in storage.
+     */
+    public function store(Request $request)
+    {
+        // Validate request data
+        $request->validate([
+            'judul' => 'required|string|max:255',
+            'deskripsi_id' => 'required|string',
+            'deskripsi_en' => 'required|string',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'urutan_animasi' => 'required|integer|min:1',
+            'article_id' => 'nullable|exists:articles,article_id',
+        ]);
+
+        // Process image if uploaded
+        $imagePath = null;
+        if ($request->hasFile('gambar')) {
+            $imagePath = $this->fileUploadService->uploadFile($request->file('gambar'), 'funfacts');
+        }
+
+        // Create funfact
+        Funfact::create([
+            'judul' => $request->judul,
+            'deskripsi_id' => $request->deskripsi_id,
+            'deskripsi_en' => $request->deskripsi_en,
+            'gambar' => $imagePath,
+            'urutan_animasi' => $request->urutan_animasi,
+            'article_id' => $request->article_id,
+        ]);
+
+        return redirect()->route('admin.funfacts.index')
+            ->with('success', 'Funfact created successfully');
+    }
+
+    /**
+     * Display the specified funfact.
+     */
+    public function show(Funfact $funfact)
+    {
+        return view('funfacts.show', compact('funfact'));
+    }
+
+    /**
+     * Show the form for editing the specified funfact.
+     */
+    public function edit(Funfact $funfact)
+    {
+        $articles = Article::where('is_approved', true)
+            ->orderBy('judul', 'asc')
+            ->get();
+            
+        return view('admin.funfacts.edit', compact('funfact', 'articles'));
+    }
+
+    /**
+     * Update the specified funfact in storage.
+     */
+    public function update(Request $request, Funfact $funfact)
+    {
+        // Validate request data
+        $request->validate([
+            'judul' => 'required|string|max:255',
+            'deskripsi_id' => 'required|string',
+            'deskripsi_en' => 'required|string',
+            'gambar' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+            'urutan_animasi' => 'required|integer|min:1',
+            'article_id' => 'nullable|exists:articles,article_id',
+        ]);
+
+        // Process image if uploaded
+        if ($request->hasFile('gambar')) {
+            // Delete old image if exists
+            if ($funfact->gambar) {
+                \Storage::delete($funfact->gambar);
+            }
+            $funfact->gambar = $this->fileUploadService->uploadFile($request->file('gambar'), 'funfacts');
+        }
+
+        // Update funfact details
+        $funfact->judul = $request->judul;
+        $funfact->deskripsi_id = $request->deskripsi_id;
+        $funfact->deskripsi_en = $request->deskripsi_en;
+        $funfact->urutan_animasi = $request->urutan_animasi;
+        $funfact->article_id = $request->article_id;
+        $funfact->save();
+
+        return redirect()->route('admin.funfacts.index')
+            ->with('success', 'Funfact updated successfully');
+    }
+
+    /**
+     * Remove the specified funfact from storage.
+     */
+    public function destroy(Funfact $funfact)
+    {
+        // Delete image if exists
+        if ($funfact->gambar) {
+            \Storage::delete($funfact->gambar);
+        }
+
+        $funfact->delete();
+
+        return redirect()->route('admin.funfacts.index')
+            ->with('success', 'Funfact deleted successfully');
+    }
+    
+    /**
+     * Get random funfacts for the home page.
+     */
+    public function getRandom(Request $request)
+    {
+        $count = $request->input('count',
